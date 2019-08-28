@@ -1,0 +1,5 @@
+(
+  title: "Iris",
+  dimensions: Some((800, 600)),
+  vsync: true,
+)
