@@ -7,15 +7,15 @@ use amethyst::{
         timing,
         transform::{Parent, Transform, TransformBundle},
     },
-    ecs::{Entity, Join, ReadExpect, ReadStorage, System, WriteStorage},
+    ecs::{Entity, Join, ReadExpect, ReadStorage, System, Write, WriteStorage},
     prelude::*,
     renderer::{
-        camera::Projection,
+        camera::{ActiveCamera, Projection},
         plugins::{RenderFlat3D, RenderToWindow},
         types::DefaultBackend,
         Camera, RenderingBundle,
     },
-    utils::application_root_dir,
+    utils::{application_root_dir, auto_fov::AutoFovSystem},
 };
 
 mod laser;
@@ -38,23 +38,44 @@ impl<'s> System<'s> for MoveLaserSystem {
     }
 }
 
+pub struct LaserFovSystem {
+    last_matrix: Matrix4<f32>,
+}
+impl LaserFovSystem {
+    fn new() -> Self {
+        Self {
+            last_matrix: Matrix4::identity(),
+        }
+    }
+}
+impl<'s> System<'s> for LaserFovSystem {
+    type SystemData = (ReadStorage<'s, Camera>, Write<'s, LaserOptions>);
+
+    fn run(&mut self, (cameras, mut options): Self::SystemData) {
+        let proj = cameras.join().next().unwrap().as_matrix();
+        if proj != &self.last_matrix {
+            let perspective_inv = proj.try_inverse().unwrap();
+            let reverse_point = |x, y, target_z| {
+                let near = perspective_inv.transform_point(&Point3::new(x, y, 0.));
+                let near_far = perspective_inv.transform_point(&Point3::new(x, y, 1.)) - near;
+                let unit = near_far / near_far.z;
+                near + (target_z - near.z) * unit
+            };
+            let judge_quad: Vec<_> = [(-1., 1.), (1., 1.), (1., -1.), (-1., -1.)]
+                .iter()
+                .map(|&(x, y)| reverse_point(x, y, -1.))
+                .collect();
+            let basis = reverse_point(0., -1., -5.);
+            *options = LaserOptions { judge_quad, basis };
+            self.last_matrix = proj.clone();
+        }
+    }
+}
+
 struct MainStage;
 
 impl MainStage {
     fn initialize_camera(&mut self, world: &mut World, proj: Projection) {
-        let perspective_inv = proj.as_matrix().try_inverse().unwrap();
-        let reverse_point = |x, y, target_z| {
-            let near = perspective_inv.transform_point(&Point3::new(x, y, 0.));
-            let near_far = perspective_inv.transform_point(&Point3::new(x, y, 1.)) - near;
-            let unit = near_far / near_far.z;
-            near + (target_z - near.z) * unit
-        };
-        let judge_quad: Vec<_> = [(-1., 1.), (1., 1.), (1., -1.), (-1., -1.)]
-            .iter()
-            .map(|&(x, y)| reverse_point(x, y, -1.))
-            .collect();
-        let basis = reverse_point(0., -1., -5.);
-        world.insert(LaserOptions { judge_quad, basis });
         world
             .create_entity()
             .with(Camera::from(proj))
@@ -136,7 +157,9 @@ fn main() -> amethyst::Result<()> {
                 .with_plugin(RenderFlat3D::default())
                 .with_plugin(RenderLaser),
         )?
-        .with(MoveLaserSystem, "move_laser", &[]);
+        .with(MoveLaserSystem, "move_laser", &[])
+        .with(AutoFovSystem::new(), "auto_fov", &[])
+        .with(LaserFovSystem::new(), "laser_fov", &["auto_fov"]);
 
     let mut game = Application::new(resources, MainStage, game_data)?;
     game.run();

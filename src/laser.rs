@@ -45,6 +45,15 @@ pub struct LaserOptions {
     pub judge_quad: Vec<Point3<f32>>,
 }
 
+impl Default for LaserOptions {
+    fn default() -> Self {
+        Self {
+            basis: Point3::new(0., 0., 0.),
+            judge_quad: Vec::new(),
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, AsStd140)]
 struct LaserArgs {
     basis: vec3,
