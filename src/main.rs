@@ -1,16 +1,14 @@
 extern crate amethyst;
 
 use amethyst::{
-    assets::Processor,
     core::{
-        math::{Matrix4, Point3, Quaternion, Translation3, Vector3},
-        timing,
+        math::{Matrix4, Point3, Vector3},
         transform::{Parent, Transform, TransformBundle},
     },
-    ecs::{Entity, Join, ReadExpect, ReadStorage, System, Write, WriteStorage},
+    ecs::{Join, ReadStorage, System, Write},
     prelude::*,
     renderer::{
-        camera::{ActiveCamera, Projection},
+        camera::Projection,
         plugins::{RenderFlat3D, RenderToWindow},
         types::DefaultBackend,
         Camera, RenderingBundle,
@@ -21,22 +19,6 @@ use amethyst::{
 mod laser;
 use crate::laser::Note;
 use laser::{Laser, LaserOptions, RenderLaser};
-
-pub struct MoveLaserSystem;
-impl<'s> System<'s> for MoveLaserSystem {
-    type SystemData = (
-        ReadExpect<'s, timing::Time>,
-        ReadStorage<'s, Laser>,
-        WriteStorage<'s, Transform>,
-    );
-
-    fn run(&mut self, (time, lasers, mut transforms): Self::SystemData) {
-        return;
-        for (_, transform) in (&lasers, &mut transforms).join() {
-            transform.set_translation_y(f64::sin(time.absolute_time_seconds()).abs() as f32);
-        }
-    }
-}
 
 pub struct LaserFovSystem {
     last_matrix: Matrix4<f32>,
@@ -157,7 +139,6 @@ fn main() -> amethyst::Result<()> {
                 .with_plugin(RenderFlat3D::default())
                 .with_plugin(RenderLaser),
         )?
-        .with(MoveLaserSystem, "move_laser", &[])
         .with(AutoFovSystem::new(), "auto_fov", &[])
         .with(LaserFovSystem::new(), "laser_fov", &["auto_fov"]);
 

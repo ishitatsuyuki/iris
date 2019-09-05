@@ -1,17 +1,14 @@
 use amethyst::core::{
-    ecs::{
-        Component, DenseVecStorage, Entities, Entity, Join, ReadExpect, ReadStorage, SystemData,
-        World,
-    },
+    ecs::{Component, DenseVecStorage, Entities, Join, ReadExpect, ReadStorage, SystemData, World},
     math::{Matrix4, Point3, Vector3},
-    transform::{Parent, ParentHierarchy, Transform},
+    transform::{ParentHierarchy, Transform},
 };
 use amethyst::renderer::{
     bundle::{RenderOrder, RenderPlan, RenderPlugin, Target},
     palette::rgb::LinSrgb,
     pass::validate_spirv,
     pipeline::{PipelineDescBuilder, PipelinesBuilder},
-    pod::{VertexArgs, ViewArgs},
+    pod::VertexArgs,
     rendy::{
         command::{QueueId, RenderPassEncoder},
         factory::Factory,
@@ -101,7 +98,7 @@ impl<B: Backend> DrawLaserDesc<B> {
 impl<B: Backend> RenderGroupDesc<B, World> for DrawLaserDesc<B> {
     fn build(
         self,
-        ctx: &GraphContext<B>,
+        _: &GraphContext<B>,
         factory: &mut Factory<B>,
         queue: QueueId,
         _: &World,
@@ -241,9 +238,9 @@ impl<B: Backend> RenderGroup<B, World> for DrawLaser<B> {
     fn prepare(
         &mut self,
         factory: &Factory<B>,
-        queue: QueueId,
+        _: QueueId,
         index: usize,
-        subpass: Subpass<B>,
+        _: Subpass<B>,
         world: &World,
     ) -> PrepareResult {
         let (entities, options, lasers, notes, transforms, hierarchy) = <(
@@ -318,9 +315,9 @@ impl<B: Backend> RenderGroup<B, World> for DrawLaser<B> {
         self.instances.clear();
         self.instances.push(0);
         let mut note_vertex_args = Vec::new();
-        for (e, l) in (&entities, &lasers).join() {
+        for (e, _) in (&entities, &lasers).join() {
             note_vertex_args.extend((&notes, &transforms, hierarchy.all_children(e)).join().map(
-                |(n, t, _)| VertexArgs {
+                |(_, t, _)| VertexArgs {
                     tint: [0., 0., 0., 1.].into(),
                     ..VertexArgs::from_object_data(t, None)
                 },
@@ -346,8 +343,8 @@ impl<B: Backend> RenderGroup<B, World> for DrawLaser<B> {
         &mut self,
         mut encoder: RenderPassEncoder<B>,
         index: usize,
-        subpass: Subpass<B>,
-        world: &World,
+        _: Subpass<B>,
+        _: &World,
     ) {
         encoder.bind_graphics_pipeline(&self.pipeline);
         self.env.bind(index, &self.pipeline_layout, 0, &mut encoder);
@@ -390,8 +387,8 @@ impl<B: Backend> RenderPlugin<B> for RenderLaser {
     fn on_plan(
         &mut self,
         plan: &mut RenderPlan<B>,
-        factory: &mut Factory<B>,
-        world: &World,
+        _: &mut Factory<B>,
+        _: &World,
     ) -> Result<(), amethyst::Error> {
         plan.extend_target(Target::default(), move |ctx| {
             ctx.add(
