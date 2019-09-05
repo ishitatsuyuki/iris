@@ -1,11 +1,15 @@
 use amethyst::core::{
-    ecs::{Component, DenseVecStorage, Entity, Join, ReadExpect, ReadStorage, SystemData, World},
+    ecs::{
+        Component, DenseVecStorage, Entities, Entity, Join, ReadExpect, ReadStorage, SystemData,
+        World,
+    },
     math::{Matrix4, Point3, Vector3},
-    Transform,
+    transform::{Parent, ParentHierarchy, Transform},
 };
 use amethyst::renderer::{
     bundle::{RenderOrder, RenderPlan, RenderPlugin, Target},
     palette::rgb::LinSrgb,
+    pass::validate_spirv,
     pipeline::{PipelineDescBuilder, PipelinesBuilder},
     pod::{VertexArgs, ViewArgs},
     rendy::{
@@ -27,10 +31,6 @@ use glsl_layout::*;
 use std::iter;
 use std::marker::PhantomData;
 
-pub struct Parent {
-    pub parent: Entity,
-}
-
 pub struct Laser {
     pub color: LinSrgb<f32>,
 }
@@ -48,20 +48,25 @@ pub struct LaserOptions {
 #[derive(Clone, Debug, PartialEq, AsStd140)]
 struct LaserArgs {
     basis: vec3,
-    transform: mat4,
+    pre_transform: mat4,
+    post_transform: mat4,
 }
 
 pub struct Note {}
 
+impl Component for Note {
+    type Storage = DenseVecStorage<Self>;
+}
+
 lazy_static::lazy_static! {
     static ref LASER_VERTEX: SpirvShader = SpirvShader::new(
-        include_bytes!("../compiled/vertex/laser.vert.spv").to_vec(),
+        validate_spirv(include_bytes!("../compiled/vertex/laser.vert.spv")),
         pso::ShaderStageFlags::VERTEX,
         "main",
     );
 
     static ref LASER_FRAGMENT: SpirvShader = SpirvShader::new(
-        include_bytes!("../compiled/fragment/laser.frag.spv").to_vec(),
+        validate_spirv(include_bytes!("../compiled/fragment/laser.frag.spv")),
         pso::ShaderStageFlags::FRAGMENT,
         "main",
     );
@@ -104,13 +109,17 @@ impl<B: Backend> RenderGroupDesc<B, World> for DrawLaserDesc<B> {
                 pso::ShaderStageFlags::FRAGMENT,
             ],
         )?;
-        let uniform = DynamicUniform::new(
+        let laser_args = DynamicUniform::new(
+            factory,
+            pso::ShaderStageFlags::VERTEX | pso::ShaderStageFlags::FRAGMENT,
+        )?;
+        let note_args = DynamicUniform::new(
             factory,
             pso::ShaderStageFlags::VERTEX | pso::ShaderStageFlags::FRAGMENT,
         )?;
         let pipeline_layout = unsafe {
             factory.device().create_pipeline_layout(
-                [env.raw_layout(), uniform.raw_layout()].iter().cloned(),
+                [env.raw_layout(), laser_args.raw_layout()].iter().cloned(),
                 None as Option<(_, _)>,
             )
         }?;
@@ -123,13 +132,10 @@ impl<B: Backend> RenderGroupDesc<B, World> for DrawLaserDesc<B> {
         let mut shaders = LASER_SHADERS.build(factory, Default::default())?;
 
         let stencil_face = pso::StencilFace {
-            fun: pso::Comparison::Always,
-            mask_read: pso::State::Static(1),
-            mask_write: pso::State::Static(1),
-            op_fail: pso::StencilOp::Keep,
+            fun: pso::Comparison::Equal,
+            op_fail: pso::StencilOp::Replace,
             op_depth_fail: pso::StencilOp::Keep,
             op_pass: pso::StencilOp::Keep,
-            reference: pso::State::Static(1),
         };
 
         let pipe_desc = PipelineDescBuilder::new()
@@ -139,20 +145,22 @@ impl<B: Backend> RenderGroupDesc<B, World> for DrawLaserDesc<B> {
             .with_subpass(subpass)
             .with_framebuffer_size(framebuffer_width, framebuffer_height)
             .with_depth_stencil(pso::DepthStencilDesc {
-                depth: pso::DepthTest::On {
+                depth: Some(pso::DepthTest {
                     fun: pso::Comparison::Less,
                     write: false,
-                },
+                }),
                 depth_bounds: false,
-                stencil: pso::StencilTest::On {
-                    front: stencil_face,
-                    back: stencil_face,
-                },
+                stencil: Some(pso::StencilTest {
+                    faces: pso::Sided::new(stencil_face),
+                    read_masks: pso::StencilValues::Static(pso::Sided::new(1)),
+                    write_masks: pso::StencilValues::Static(pso::Sided::new(1)),
+                    reference_values: pso::State::Dynamic,
+                }),
             })
-            .with_blend_targets(vec![pso::ColorBlendDesc(
-                pso::ColorMask::ALL,
-                pso::BlendState::ADD,
-            )]);
+            .with_blend_targets(vec![pso::ColorBlendDesc {
+                mask: pso::ColorMask::ALL,
+                blend: Some(pso::BlendState::ADD),
+            }]);
 
         let mut pipelines = PipelinesBuilder::new()
             .with_pipeline(pipe_desc)
@@ -183,10 +191,12 @@ impl<B: Backend> RenderGroupDesc<B, World> for DrawLaserDesc<B> {
             pipeline: pipelines.pop().unwrap(),
             pipeline_layout,
             env,
-            uniform,
+            laser_args,
+            note_args,
             lasers: DynamicVertexBuffer::new(),
-            laser_mesh,
-            instances: 0,
+            notes: DynamicVertexBuffer::new(),
+            instances: Vec::new(),
+            square_mesh: laser_mesh,
         }))
     }
 }
@@ -210,10 +220,12 @@ pub struct DrawLaser<B: Backend> {
     pipeline: B::GraphicsPipeline,
     pipeline_layout: B::PipelineLayout,
     env: EnvironmentSub<B>,
-    uniform: DynamicUniform<B, LaserArgs>,
+    laser_args: DynamicUniform<B, LaserArgs>,
+    note_args: DynamicUniform<B, LaserArgs>,
     lasers: DynamicVertexBuffer<B, VertexArgs>,
-    laser_mesh: Mesh<B>,
-    instances: u64,
+    notes: DynamicVertexBuffer<B, VertexArgs>,
+    instances: Vec<u32>,
+    square_mesh: Mesh<B>,
 }
 
 impl<B: Backend> RenderGroup<B, World> for DrawLaser<B> {
@@ -225,10 +237,13 @@ impl<B: Backend> RenderGroup<B, World> for DrawLaser<B> {
         subpass: Subpass<B>,
         world: &World,
     ) -> PrepareResult {
-        let (options, lasers, transforms) = <(
+        let (entities, options, lasers, notes, transforms, hierarchy) = <(
+            Entities,
             ReadExpect<LaserOptions>,
             ReadStorage<Laser>,
+            ReadStorage<Note>,
             ReadStorage<Transform>,
+            ReadExpect<ParentHierarchy>,
         )>::fetch(world);
         self.env.process(factory, index, world);
 
@@ -236,6 +251,7 @@ impl<B: Backend> RenderGroup<B, World> for DrawLaser<B> {
         let start_z = 0.;
         let end_z = 1.;
         let cutoff = 0.7;
+        let note_len = 0.02;
 
         let source: Vec<_> = [
             [0., 0., start_z],
@@ -259,15 +275,28 @@ impl<B: Backend> RenderGroup<B, World> for DrawLaser<B> {
         ]
         .to_vec();
 
+        let identity: [[f32; 4]; 4] = Matrix4::identity().into();
         let transform: [[f32; 4]; 4] =
             (basis_to_points(&target) * basis_to_points(&source).try_inverse().unwrap()).into();
 
-        let params = LaserArgs {
+        let note_transform: [[f32; 4]; 4] = Matrix4::new_translation(&Vector3::new(0., 0., -0.5))
+            .append_nonuniform_scaling(&Vector3::new(1., 1., note_len))
+            .into();
+
+        let laser_args = LaserArgs {
             basis: basis.into(),
-            transform: transform.into(),
+            pre_transform: identity.into(),
+            post_transform: transform.into(),
         };
-        self.uniform.write(factory, index, params.std140());
-        let vertex_args: Vec<_> = (&lasers, &transforms)
+
+        let note_args = LaserArgs {
+            basis: basis.into(),
+            pre_transform: note_transform.into(),
+            post_transform: transform.into(),
+        };
+        self.laser_args.write(factory, index, laser_args.std140());
+        self.note_args.write(factory, index, note_args.std140());
+        let laser_vertex_args: Vec<_> = (&lasers, &transforms)
             .join()
             .map(|(l, t)| {
                 let (r, g, b) = l.color.into_components();
@@ -277,9 +306,30 @@ impl<B: Backend> RenderGroup<B, World> for DrawLaser<B> {
                 }
             })
             .collect();
-        self.instances = vertex_args.len() as u64;
-        self.lasers
-            .write(factory, index, self.instances, &[vertex_args]);
+        self.instances.clear();
+        self.instances.push(0);
+        let mut note_vertex_args = Vec::new();
+        for (e, l) in (&entities, &lasers).join() {
+            note_vertex_args.extend((&notes, &transforms, hierarchy.all_children(e)).join().map(
+                |(n, t, _)| VertexArgs {
+                    tint: [0., 0., 0., 1.].into(),
+                    ..VertexArgs::from_object_data(t, None)
+                },
+            ));
+            self.instances.push(note_vertex_args.len() as u32);
+        }
+        self.lasers.write(
+            factory,
+            index,
+            laser_vertex_args.len() as u64,
+            &[laser_vertex_args],
+        );
+        self.notes.write(
+            factory,
+            index,
+            note_vertex_args.len() as u64,
+            &[note_vertex_args],
+        );
         PrepareResult::DrawRecord
     }
 
@@ -292,11 +342,23 @@ impl<B: Backend> RenderGroup<B, World> for DrawLaser<B> {
     ) {
         encoder.bind_graphics_pipeline(&self.pipeline);
         self.env.bind(index, &self.pipeline_layout, 0, &mut encoder);
-        self.uniform
-            .bind(index, &self.pipeline_layout, 1, &mut encoder);
-        for i in 0..self.instances {
+        for (i, window) in self.instances.windows(2).enumerate() {
+            unsafe {
+                encoder.set_stencil_reference(pso::Face::FRONT | pso::Face::BACK, 0);
+            }
+            self.note_args
+                .bind(index, &self.pipeline_layout, 1, &mut encoder);
+            self.notes.bind(index, 1, 0, &mut encoder);
+            self.square_mesh
+                .bind_and_draw(0, &[PosTex::vertex()], window[0]..window[1], &mut encoder)
+                .unwrap();
+            unsafe {
+                encoder.set_stencil_reference(pso::Face::FRONT | pso::Face::BACK, 1);
+            }
+            self.laser_args
+                .bind(index, &self.pipeline_layout, 1, &mut encoder);
             self.lasers.bind(index, 1, 0, &mut encoder);
-            self.laser_mesh
+            self.square_mesh
                 .bind_and_draw(0, &[PosTex::vertex()], i as u32..i as u32 + 1, &mut encoder)
                 .unwrap();
         }

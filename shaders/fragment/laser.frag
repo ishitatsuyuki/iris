@@ -5,7 +5,8 @@ const float attenuation = 0.9;
 
 layout(set = 1, binding = 0) uniform LaserArgs {
     vec3 basis;
-    mat4 transform;
+    mat4 pre_transform;
+    mat4 post_transform;
 };
 
 layout(location = 0) in VertexData {

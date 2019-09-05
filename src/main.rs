@@ -5,7 +5,7 @@ use amethyst::{
     core::{
         math::{Matrix4, Point3, Quaternion, Translation3, Vector3},
         timing,
-        transform::{Transform, TransformBundle},
+        transform::{Parent, Transform, TransformBundle},
     },
     ecs::{Entity, Join, ReadExpect, ReadStorage, System, WriteStorage},
     prelude::*,
@@ -19,6 +19,7 @@ use amethyst::{
 };
 
 mod laser;
+use crate::laser::Note;
 use laser::{Laser, LaserOptions, RenderLaser};
 
 pub struct MoveLaserSystem;
@@ -67,6 +68,7 @@ impl SimpleState for MainStage {
         let proj = Projection::perspective(4.0 / 3.0, 90.0, 0.01, 100.0);
         self.initialize_camera(data.world, proj);
         data.world.register::<Laser>();
+        data.world.register::<Note>();
         data.world
             .create_entity()
             .with(Laser {
@@ -76,12 +78,22 @@ impl SimpleState for MainStage {
             .build();
         let mut transform = Transform::default();
         transform.set_translation_y(0.2);
-        data.world
+        let eid = data
+            .world
             .create_entity()
             .with(Laser {
                 color: (0., 0.1, 0.8).into(),
             })
             .with(transform)
+            .build();
+        let mut transform2 = Transform::default();
+        transform2.set_translation_xyz(0.4, 0., 0.3);
+        transform2.set_scale(Vector3::new(0.2, 1., 1.));
+        data.world
+            .create_entity()
+            .with(Note {})
+            .with(transform2)
+            .with(Parent::new(eid))
             .build();
     }
 }

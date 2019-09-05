@@ -7,7 +7,8 @@ layout(std140, set = 0, binding = 0) uniform Projview {
 
 layout(set = 1, binding = 0) uniform LaserArgs {
     vec3 basis;
-    mat4 transform;
+    mat4 pre_transform;
+    mat4 post_transform;
 };
 
 layout(location = 0) in vec3 position;
@@ -22,7 +23,7 @@ layout(location = 0) out VertexData {
 } vertex;
 
 void main() {
-    vec4 vertex_position = transform * model * vec4(position, 1.0);
+    vec4 vertex_position = post_transform * model * pre_transform * vec4(position, 1.0);
     vertex.position = vertex_position.xyz / vertex_position.w;
     vertex.tex_coord = tex_coord;
     vertex.color = tint;
