@@ -9,9 +9,10 @@ amethyst = { path = "../amethyst", default-features = false }
 failure = "0.1.5"
 lazy_static = "1.3.0"
 glsl-layout = "0.3.0"
+superslice = "1.0.0"
 
 [features]
-default = ["amethyst/animation", "amethyst/renderer", "amethyst/vulkan", "amethyst/nightly"]
+default = ["amethyst/animation", "amethyst/renderer", "amethyst/vulkan"]
 
 [profile.dev]
 opt-level = 1

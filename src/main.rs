@@ -2,8 +2,9 @@ extern crate amethyst;
 
 use amethyst::{
     core::{
-        math::{Matrix4, Point3, Vector3},
-        transform::{Parent, Transform, TransformBundle},
+        math::{Matrix4, Point3},
+        timing::Time,
+        transform::{Transform, TransformBundle},
     },
     ecs::{Join, ReadStorage, System, Write},
     prelude::*,
@@ -17,8 +18,11 @@ use amethyst::{
 };
 
 mod laser;
-use crate::laser::Note;
-use laser::{Laser, LaserOptions, RenderLaser};
+use crate::chart::{BpmCommand, Chart, LaserCommand, LaserId, Note, PlaySettings, Timed};
+use chart::NoteSystem;
+use laser::{LaserOptions, RenderLaser};
+
+mod chart;
 
 pub struct LaserFovSystem {
     last_matrix: Matrix4<f32>,
@@ -64,40 +68,64 @@ impl MainStage {
             .with(Transform::default())
             .build();
     }
+
+    fn initialize_chart(&mut self, world: &mut World) {
+        world.register::<laser::Note>();
+        world.register::<laser::Laser>();
+        let now = world.fetch::<Time>().absolute_time_seconds();
+        world.insert(Some(PlaySettings {
+            speed: 1.0,
+            base_time: now,
+        }));
+        world.insert(Some(Chart {
+            notes: (0..32)
+                .flat_map(|i| {
+                    vec![
+                        Timed {
+                            time: 0.075 * (2 * i) as f32 + 1.0,
+                            inner: Note {
+                                laser: LaserId(0),
+                                lane: 1,
+                            },
+                        },
+                        Timed {
+                            time: 0.075 * (2 * i + 1) as f32 + 1.0,
+                            inner: Note {
+                                laser: LaserId(0),
+                                lane: 2,
+                            },
+                        },
+                    ]
+                })
+                .collect(),
+            bpm: vec![Timed {
+                time: 0.0,
+                inner: BpmCommand {
+                    bpm: 200.,
+                    position: 0.0,
+                },
+            }],
+            lasers: vec![Timed {
+                time: 0.0,
+                inner: (
+                    LaserId(0),
+                    LaserCommand::Enter {
+                        y: 0.3,
+                        lanes: 4,
+                        color: (0., 0.1, 0.8).into(),
+                    },
+                ),
+            }],
+            default_bpm: 200.0,
+        }))
+    }
 }
 
 impl SimpleState for MainStage {
     fn on_start(&mut self, data: StateData<'_, GameData<'_, '_>>) {
         let proj = Projection::perspective(4.0 / 3.0, 90.0, 0.01, 100.0);
         self.initialize_camera(data.world, proj);
-        data.world.register::<Laser>();
-        data.world.register::<Note>();
-        data.world
-            .create_entity()
-            .with(Laser {
-                color: (0.8, 0.1, 0.1).into(),
-            })
-            .with(Transform::default())
-            .build();
-        let mut transform = Transform::default();
-        transform.set_translation_y(0.2);
-        let eid = data
-            .world
-            .create_entity()
-            .with(Laser {
-                color: (0., 0.1, 0.8).into(),
-            })
-            .with(transform)
-            .build();
-        let mut transform2 = Transform::default();
-        transform2.set_translation_xyz(0.4, 0., 0.3);
-        transform2.set_scale(Vector3::new(0.2, 1., 1.));
-        data.world
-            .create_entity()
-            .with(Note {})
-            .with(transform2)
-            .with(Parent::new(eid))
-            .build();
+        self.initialize_chart(data.world);
     }
 }
 
@@ -130,7 +158,6 @@ fn main() -> amethyst::Result<()> {
     let game_data = GameDataBuilder::default()
         .with_bundle(TransformBundle::new())?
         .with_bundle(
-            // which will always execute on the main thread.
             RenderingBundle::<DefaultBackend>::new()
                 // The RenderToWindow plugin provides all the scaffolding for opening a window and drawing on it
                 .with_plugin(
@@ -140,7 +167,8 @@ fn main() -> amethyst::Result<()> {
                 .with_plugin(RenderLaser),
         )?
         .with(AutoFovSystem::new(), "auto_fov", &[])
-        .with(LaserFovSystem::new(), "laser_fov", &["auto_fov"]);
+        .with(LaserFovSystem::new(), "laser_fov", &["auto_fov"])
+        .with(NoteSystem, "note_system", &[]);
 
     let mut game = Application::new(resources, MainStage, game_data)?;
     game.run();

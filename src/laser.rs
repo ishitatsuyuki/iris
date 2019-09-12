@@ -1,5 +1,9 @@
+use crate::chart::ChartState;
 use amethyst::core::{
-    ecs::{Component, DenseVecStorage, Entities, Join, ReadExpect, ReadStorage, SystemData, World},
+    ecs::{
+        Component, DenseVecStorage, Entities, Join, Read, ReadExpect, ReadStorage, SystemData,
+        World,
+    },
     math::{Matrix4, Point3, Vector3},
     transform::{ParentHierarchy, Transform},
 };
@@ -30,6 +34,7 @@ use std::marker::PhantomData;
 
 pub struct Laser {
     pub color: LinSrgb<f32>,
+    pub lanes: u16,
 }
 
 impl Component for Laser {
@@ -243,28 +248,41 @@ impl<B: Backend> RenderGroup<B, World> for DrawLaser<B> {
         _: Subpass<B>,
         world: &World,
     ) -> PrepareResult {
-        let (entities, options, lasers, notes, transforms, hierarchy) = <(
-            Entities,
-            ReadExpect<LaserOptions>,
-            ReadStorage<Laser>,
-            ReadStorage<Note>,
-            ReadStorage<Transform>,
-            ReadExpect<ParentHierarchy>,
-        )>::fetch(world);
+        let (entities, options, state, lasers, notes, transforms, hierarchy) =
+            <(
+                Entities,
+                ReadExpect<LaserOptions>,
+                Read<ChartState>,
+                ReadStorage<Laser>,
+                ReadStorage<Note>,
+                ReadStorage<Transform>,
+                ReadExpect<ParentHierarchy>,
+            )>::fetch(world);
         self.env.process(factory, index, world);
 
         let basis: [f32; 3] = options.basis.coords.into();
-        let start_z = 0.;
-        let end_z = 1.;
-        let cutoff = 0.7;
-        let note_len = 0.02;
+        let start_z = state.draw_window.start;
+        let end_z = state.draw_window.end;
+        let cutoff = state.cutoff;
+        let note_len = 0.03;
 
-        let source: Vec<_> = [
+        let note_source: Vec<_> = [
             [0., 0., start_z],
             [1., 0., start_z],
             [0., 1., start_z],
             [0., 0., end_z],
             [1., 1., end_z],
+        ]
+        .iter()
+        .map(|x| Vector3::from_column_slice(x))
+        .collect();
+
+        let laser_source: Vec<_> = [
+            [0., 0., 0.],
+            [1., 0., 0.],
+            [0., 1., 0.],
+            [0., 0., 1.],
+            [1., 1., 1.],
         ]
         .iter()
         .map(|x| Vector3::from_column_slice(x))
@@ -282,23 +300,27 @@ impl<B: Backend> RenderGroup<B, World> for DrawLaser<B> {
         .to_vec();
 
         let identity: [[f32; 4]; 4] = Matrix4::identity().into();
-        let transform: [[f32; 4]; 4] =
-            (basis_to_points(&target) * basis_to_points(&source).try_inverse().unwrap()).into();
-
-        let note_transform: [[f32; 4]; 4] = Matrix4::new_translation(&Vector3::new(0., 0., -0.5))
-            .append_nonuniform_scaling(&Vector3::new(1., 1., note_len))
-            .into();
+        let laser_post_transform: [[f32; 4]; 4] = (basis_to_points(&target)
+            * basis_to_points(&laser_source).try_inverse().unwrap())
+        .into();
+        let note_post_transform: [[f32; 4]; 4] = (basis_to_points(&target)
+            * basis_to_points(&note_source).try_inverse().unwrap())
+        .into();
+        let note_pre_transform: [[f32; 4]; 4] =
+            Matrix4::new_translation(&Vector3::new(0., 0., -0.5))
+                .append_nonuniform_scaling(&Vector3::new(1., 1., note_len))
+                .into();
 
         let laser_args = LaserArgs {
             basis: basis.into(),
             pre_transform: identity.into(),
-            post_transform: transform.into(),
+            post_transform: laser_post_transform.into(),
         };
 
         let note_args = LaserArgs {
             basis: basis.into(),
-            pre_transform: note_transform.into(),
-            post_transform: transform.into(),
+            pre_transform: note_pre_transform.into(),
+            post_transform: note_post_transform.into(),
         };
         self.laser_args.write(factory, index, laser_args.std140());
         self.note_args.write(factory, index, note_args.std140());
@@ -327,13 +349,13 @@ impl<B: Backend> RenderGroup<B, World> for DrawLaser<B> {
         self.lasers.write(
             factory,
             index,
-            laser_vertex_args.len() as u64,
+            std::cmp::max(laser_vertex_args.len() as u64, 1),
             &[laser_vertex_args],
         );
         self.notes.write(
             factory,
             index,
-            note_vertex_args.len() as u64,
+            std::cmp::max(note_vertex_args.len() as u64, 1),
             &[note_vertex_args],
         );
         PrepareResult::DrawRecord
