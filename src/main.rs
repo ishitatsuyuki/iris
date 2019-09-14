@@ -5,22 +5,31 @@ use amethyst::{
         math::{Matrix4, Point3},
         timing::Time,
         transform::{Transform, TransformBundle},
+        SystemBundle,
     },
-    ecs::{Join, ReadStorage, System, Write},
+    ecs::{DispatcherBuilder, Join, ReadExpect, ReadStorage, System, SystemData, Write},
     prelude::*,
     renderer::{
+        bundle::{ImageOptions, OutputColor, RenderPlan, RenderPlugin, Target, TargetPlanOutputs},
         camera::Projection,
-        plugins::{RenderFlat3D, RenderToWindow},
+        plugins::RenderFlat3D,
+        rendy::hal::{
+            command::{ClearColor, ClearDepthStencil, ClearValue},
+            format::{Format, ImageFeature},
+            PhysicalDevice,
+        },
         types::DefaultBackend,
-        Camera, RenderingBundle,
+        Backend, Camera, Factory, Kind, RenderingBundle,
     },
     utils::{application_root_dir, auto_fov::AutoFovSystem},
+    window::{DisplayConfig, ScreenDimensions, Window, WindowBundle},
 };
 
 mod laser;
 use crate::chart::{BpmCommand, Chart, LaserCommand, LaserId, Note, PlaySettings, Timed};
 use chart::NoteSystem;
 use laser::{LaserOptions, RenderLaser};
+use std::path::Path;
 
 mod chart;
 
@@ -129,6 +138,116 @@ impl SimpleState for MainStage {
     }
 }
 
+#[derive(Default, Debug)]
+struct RenderToWindowWithStencil {
+    dirty: bool,
+    clear: Option<ClearColor>,
+    depth_clear: Option<ClearDepthStencil>,
+    config: Option<DisplayConfig>,
+    dimensions: Option<ScreenDimensions>,
+}
+
+impl RenderToWindowWithStencil {
+    /// Create RenderToWindow plugin with [`WindowBundle`] using specified config path.
+    pub fn from_config_path(path: impl AsRef<Path>) -> Self {
+        Self::from_config(DisplayConfig::load(path))
+    }
+
+    /// Create RenderToWindow plugin with [`WindowBundle`] using specified config.
+    pub fn from_config(display_config: DisplayConfig) -> Self {
+        Self {
+            config: Some(display_config),
+            ..Default::default()
+        }
+    }
+
+    /// Clear window with specified color every frame.
+    pub fn with_clear(mut self, clear: impl Into<ClearColor>) -> Self {
+        self.clear = Some(clear.into());
+        self
+    }
+}
+
+impl<B: Backend> RenderPlugin<B> for RenderToWindowWithStencil {
+    fn on_build<'a, 'b>(
+        &mut self,
+        world: &mut World,
+        builder: &mut DispatcherBuilder<'a, 'b>,
+    ) -> Result<(), amethyst::error::Error> {
+        if let Some(config) = self.config.take() {
+            WindowBundle::from_config(config).build(world, builder)?;
+        }
+
+        Ok(())
+    }
+
+    #[allow(clippy::map_clone)]
+    fn should_rebuild(&mut self, world: &World) -> bool {
+        let new_dimensions = world.try_fetch::<ScreenDimensions>();
+        use std::ops::Deref;
+        if self.dimensions.as_ref() != new_dimensions.as_ref().map(|d| d.deref()) {
+            self.dirty = true;
+            self.dimensions = new_dimensions.map(|d| d.deref().clone());
+            return false;
+        }
+        self.dirty
+    }
+
+    fn on_plan(
+        &mut self,
+        plan: &mut RenderPlan<B>,
+        factory: &mut Factory<B>,
+        world: &World,
+    ) -> Result<(), amethyst::error::Error> {
+        self.dirty = false;
+
+        let window = <ReadExpect<'_, Window>>::fetch(world);
+        let surface = factory.create_surface(&window);
+        let dimensions = self.dimensions.as_ref().unwrap();
+        let window_kind = Kind::D2(dimensions.width() as u32, dimensions.height() as u32, 1, 1);
+
+        let format = [
+            Format::D24UnormS8Uint,
+            Format::D32SfloatS8Uint,
+            Format::D16UnormS8Uint,
+        ]
+        .iter()
+        .cloned()
+        .filter(|&f| {
+            factory
+                .physical()
+                .format_properties(Some(f))
+                .optimal_tiling
+                .contains(ImageFeature::DEPTH_STENCIL_ATTACHMENT)
+        })
+        .next()
+        .ok_or_else(|| {
+            amethyst::error::Error::from_string("None of the stencil formats are supported")
+        })?;
+
+        let depth_options = ImageOptions {
+            kind: window_kind,
+            levels: 1,
+            format,
+            clear: Some(ClearValue::DepthStencil(ClearDepthStencil(1.0, 0))),
+        };
+
+        plan.add_root(Target::Main);
+        plan.define_pass(
+            Target::Main,
+            TargetPlanOutputs {
+                colors: vec![OutputColor::Surface(
+                    surface,
+                    self.clear.map(ClearValue::Color),
+                )],
+                depth: Some(depth_options),
+            },
+        )?;
+
+        Ok(())
+    }
+}
+
 fn main() -> amethyst::Result<()> {
     amethyst::Logger::from_config(Default::default())
         .level_for("gfx_backend_vulkan", amethyst::LogLevelFilter::Warn)
@@ -161,7 +280,8 @@ fn main() -> amethyst::Result<()> {
             RenderingBundle::<DefaultBackend>::new()
                 // The RenderToWindow plugin provides all the scaffolding for opening a window and drawing on it
                 .with_plugin(
-                    RenderToWindow::from_config_path(display_config).with_clear([0., 0., 0., 1.]),
+                    RenderToWindowWithStencil::from_config_path(display_config)
+                        .with_clear([0., 0., 0., 1.]),
                 )
                 .with_plugin(RenderFlat3D::default())
                 .with_plugin(RenderLaser),
