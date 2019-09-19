@@ -63,7 +63,9 @@ struct LaserArgs {
     post_transform: mat4,
 }
 
-pub struct Note {}
+pub struct Note {
+    pub time: f32,
+}
 
 impl Component for Note {
     type Storage = DenseVecStorage<Self>;

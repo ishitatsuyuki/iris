@@ -57,7 +57,11 @@ pub struct NoteSystem;
 pub struct PlaySettings {
     /// The margin between note appearance and judgement in seconds.
     pub speed: f32,
+    /// The offset to apply to input timestamps.
+    pub offset: f32,
     pub base_time: f64,
+    /// The degree to which keyboard positions are compensated.
+    pub norm_threshold: f32,
 }
 pub struct ChartState {
     /// The window of transforms z where we draw.
@@ -177,7 +181,9 @@ impl<'s> System<'s> for NoteSystem {
                 now_rel + settings.speed,
             )] {
                 let eid = entities.create();
-                note_storage.insert(eid, laser::Note {}).unwrap();
+                note_storage
+                    .insert(eid, laser::Note { time: to_load.time })
+                    .unwrap();
                 let laser_id = state.lasers[&to_load.laser];
                 let laser = laser_storage.get(laser_id).unwrap();
                 parents.insert(eid, Parent::new(laser_id)).unwrap();

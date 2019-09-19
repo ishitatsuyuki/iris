@@ -1,6 +1,9 @@
 extern crate amethyst;
 
 use amethyst::{
+    animation::AnimationBundle,
+    assets::Loader,
+    config::Config,
     core::{
         math::{Matrix4, Point3},
         timing::Time,
@@ -8,6 +11,7 @@ use amethyst::{
         SystemBundle,
     },
     ecs::{DispatcherBuilder, Join, ReadExpect, ReadStorage, System, SystemData, Write},
+    input::{InputBundle, StringBindings},
     prelude::*,
     renderer::{
         bundle::{ImageOptions, OutputColor, RenderPlan, RenderPlugin, Target, TargetPlanOutputs},
@@ -21,13 +25,15 @@ use amethyst::{
         types::DefaultBackend,
         Backend, Camera, Factory, Kind, RenderingBundle,
     },
+    ui::{FontHandle, RenderUi, TtfFormat, UiBundle, UiTransform},
     utils::{application_root_dir, auto_fov::AutoFovSystem},
     window::{DisplayConfig, ScreenDimensions, Window, WindowBundle},
 };
 
+mod judge;
 mod laser;
-use crate::chart::{BpmCommand, Chart, LaserCommand, LaserId, Note, PlaySettings, Timed};
-use chart::NoteSystem;
+use chart::{BpmCommand, Chart, LaserCommand, LaserId, Note, NoteSystem, PlaySettings, Timed};
+use judge::{JudgeSystemDesc, ScancodeMap};
 use laser::{LaserOptions, RenderLaser};
 use std::path::Path;
 
@@ -83,8 +89,10 @@ impl MainStage {
         world.register::<laser::Laser>();
         let now = world.fetch::<Time>().absolute_time_seconds();
         world.insert(Some(PlaySettings {
-            speed: 1.0,
+            speed: 0.7,
             base_time: now,
+            offset: -0.05,
+            norm_threshold: 0.1,
         }));
         world.insert(Some(Chart {
             notes: (0..32)
@@ -119,7 +127,7 @@ impl MainStage {
                 inner: (
                     LaserId(0),
                     LaserCommand::Enter {
-                        y: 0.3,
+                        y: 0.1,
                         lanes: 4,
                         color: (0., 0.1, 0.8).into(),
                     },
@@ -131,12 +139,21 @@ impl MainStage {
 }
 
 impl SimpleState for MainStage {
-    fn on_start(&mut self, data: StateData<'_, GameData<'_, '_>>) {
+    fn on_start(&mut self, StateData { world, .. }: StateData<'_, GameData<'_, '_>>) {
         let proj = Projection::perspective(4.0 / 3.0, 90.0, 0.01, 100.0);
-        self.initialize_camera(data.world, proj);
-        self.initialize_chart(data.world);
+        self.initialize_camera(world, proj);
+        self.initialize_chart(world);
+        let font = world.read_resource::<Loader>().load(
+            "Inter-Regular.ttf",
+            TtfFormat,
+            (),
+            &world.read_resource(),
+        );
+        world.insert(InterFont(font));
     }
 }
+
+pub struct InterFont(pub FontHandle);
 
 #[derive(Default, Debug)]
 struct RenderToWindowWithStencil {
@@ -206,6 +223,7 @@ impl<B: Backend> RenderPlugin<B> for RenderToWindowWithStencil {
         let dimensions = self.dimensions.as_ref().unwrap();
         let window_kind = Kind::D2(dimensions.width() as u32, dimensions.height() as u32, 1, 1);
 
+        // TODO: more detailed queries
         let format = [
             Format::D24UnormS8Uint,
             Format::D32SfloatS8Uint,
@@ -273,9 +291,16 @@ fn main() -> amethyst::Result<()> {
 
     let resources = app_root.join("resources");
     let display_config = resources.join("display_config.ron");
+    let scancode = resources.join("scancode.ron");
 
     let game_data = GameDataBuilder::default()
+        .with_bundle(AnimationBundle::<(), UiTransform>::new(
+            "animation_control_system",
+            "sampler_interpolation_system",
+        ))?
         .with_bundle(TransformBundle::new())?
+        .with_bundle(UiBundle::<StringBindings>::new())?
+        .with_bundle(InputBundle::<StringBindings>::new())?
         .with_bundle(
             RenderingBundle::<DefaultBackend>::new()
                 // The RenderToWindow plugin provides all the scaffolding for opening a window and drawing on it
@@ -284,11 +309,19 @@ fn main() -> amethyst::Result<()> {
                         .with_clear([0., 0., 0., 1.]),
                 )
                 .with_plugin(RenderFlat3D::default())
-                .with_plugin(RenderLaser),
+                .with_plugin(RenderLaser)
+                .with_plugin(RenderUi::default()),
         )?
         .with(AutoFovSystem::new(), "auto_fov", &[])
         .with(LaserFovSystem::new(), "laser_fov", &["auto_fov"])
-        .with(NoteSystem, "note_system", &[]);
+        .with(NoteSystem, "note_system", &[])
+        .with_system_desc(
+            JudgeSystemDesc {
+                mapping: ScancodeMap::load(scancode),
+            },
+            "judge_system",
+            &["note_system", "animation_control_system"],
+        );
 
     let mut game = Application::new(resources, MainStage, game_data)?;
     game.run();
